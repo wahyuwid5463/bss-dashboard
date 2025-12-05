@@ -210,3 +210,13 @@ def get_tenders():
     """Endpoint utama yang dipakai Dashboard BSS."""
     return TENDERS
 
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
+
+# Letakkan semua router dan endpoint kamu di sini
+
+# Vercel handler
+from mangum import Mangum
+handler = Mangum(app)
