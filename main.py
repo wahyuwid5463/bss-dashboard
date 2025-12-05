@@ -1,7 +1,5 @@
-
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional, Dict
 from datetime import datetime
 
 app = FastAPI(
@@ -10,7 +8,7 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Izinkan diakses dari mana saja (supaya dashboard Gemeni / HTML bisa fetch)
+# Izinkan diakses dari mana saja (supaya dashboard Gemini / HTML bisa fetch)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,10 +17,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =====================
+# =====================================
 # DATA DUMMY REALISTIS
-# =====================
-TENDERS: List[Dict] = [
+# =====================================
+TENDERS = [
     {
         "kode": "DUMMY-001/2025",
         "nama_paket": "Pembangunan Rumah Sakit Tk. IV Asmir Kodam IV Diponegoro",
@@ -58,118 +56,131 @@ TENDERS: List[Dict] = [
     },
 ]
 
-# =========
-# ROOT
-# =========
-@app.get("/")
-def root():
+# =====================================
+# UTIL & HEALTH CHECK
+# =====================================
+
+@app.get("/api/health")
+def health_check():
     return {
-        "message": "BSS Tender Intelligence API",
-        "docs": "/docs",
-        "datetime": datetime.utcnow().isoformat() + "Z",
+        "status": "ok",
+        "service": "bss-tender-api",
+        "time": datetime.utcnow().isoformat() + "Z",
     }
 
-# ==========================
-# 1) LIST TENDER (utama)
-# ==========================
-@app.get("/api/tenders")
-def list_tenders(
-    q: Optional[str] = Query(default=None, description="Cari di nama paket / kode / lokasi"),
-    instansi: Optional[str] = Query(default=None, description="Filter berdasarkan instansi"),
-    status: Optional[str] = Query(default=None, description="Filter berdasarkan status"),
+
+def _filter_tenders(
+    q: str | None = None,
+    instansi: str | None = None,
+    status: str | None = None,
+    min_pagu: int | None = None,
+    max_pagu: int | None = None,
 ):
-    """
-    Endpoint utama yang dipakai dashboard.
-    - /api/tenders                 -> semua tender
-    - /api/tenders?q=rumah         -> cari kata 'rumah'
-    - /api/tenders?status=Evaluasi -> filter status
-    """
-    q_lower = (q or "").lower()
+    """Filter list tender berdasarkan query."""
+    results = TENDERS
 
-    def match(t: Dict) -> bool:
-        # Search text
-        if q_lower:
-            if not (
-                q_lower in (t.get("nama_paket") or "").lower()
-                or q_lower in (t.get("kode") or "").lower()
-                or q_lower in (t.get("lokasi") or "").lower()
-            ):
-                return False
+    if q:
+        q_low = q.lower()
+        results = [
+            t for t in results
+            if q_low in t["nama_paket"].lower()
+            or q_low in t["kode"].lower()
+            or q_low in t["lokasi"].lower()
+        ]
 
-        # Filter instansi (exact match)
-        if instansi and t.get("instansi") != instansi:
-            return False
+    if instansi:
+        results = [t for t in results if t["instansi"] == instansi]
 
-        # Filter status (exact match)
-        if status and t.get("status") != status:
-            return False
+    if status:
+        results = [t for t in results if t["status"] == status]
 
-        return True
+    if min_pagu is not None:
+        results = [t for t in results if t["nilai_pagu"] >= min_pagu]
 
-    filtered = [t for t in TENDERS if match(t)]
-    return {
-        "count": len(filtered),
-        "items": filtered,
-    }
+    if max_pagu is not None:
+        results = [t for t in results if t["nilai_pagu"] <= max_pagu]
 
-# ============================================
-# 2) DETAIL TENDER (pakai QUERY, bukan path)
-# ============================================
-@app.get("/api/tender-detail")
-def tender_detail(
-    kode: str = Query(..., description="Kode tender, contoh: DUMMY-001/2025"),
-):
-    """
-    Karena kode mengandung '/', kita pakai query:
-    /api/tender-detail?kode=DUMMY-001/2025
-    """
+    return results
+
+
+def _get_tender_by_kode(kode: str):
     for t in TENDERS:
-        if t.get("kode") == kode:
+        if t["kode"] == kode:
             return t
-    raise HTTPException(status_code=404, detail="Tender tidak ditemukan")
+    return None
 
-# ==========================
-# 3) SEARCH (shortcut)
-# ==========================
-@app.get("/api/search")
-def search_tenders(
-    q: str = Query(..., description="Kata kunci pencarian"),
+
+# =====================================
+# ENDPOINT UTAMA
+# =====================================
+
+# 1) LIST + FILTER
+@app.get("/api/tenders")
+def get_tenders(
+    q: str | None = None,
+    instansi: str | None = None,
+    status: str | None = None,
+    min_pagu: int | None = None,
+    max_pagu: int | None = None,
 ):
     """
-    Shortcut dari /api/tenders?q=
-    /api/search?q=rumah
+    Contoh:
+    - /api/tenders
+    - /api/tenders?q=rumah
+    - /api/tenders?instansi=Kementerian%20PUPR
+    - /api/tenders?status=Pengumuman&min_pagu=1000000000
     """
-    q_lower = q.lower()
-    results = [
-        t
-        for t in TENDERS
-        if q_lower in (t.get("nama_paket") or "").lower()
-        or q_lower in (t.get("kode") or "").lower()
-        or q_lower in (t.get("lokasi") or "").lower()
-    ]
-    return {
-        "query": q,
-        "count": len(results),
-        "items": results,
-    }
+    return _filter_tenders(q, instansi, status, min_pagu, max_pagu)
 
-# ==========================
-# 4) STATISTIK (untuk kartu)
-# ==========================
+
+# 2) DETAIL BY PATH → /api/tenders/DUMMY-001/2025
+@app.get("/api/tenders/{kode}")
+def get_tender_detail_path(kode: str):
+    tender = _get_tender_by_kode(kode)
+    if not tender:
+        raise HTTPException(status_code=404, detail="Tender tidak ditemukan")
+    return tender
+
+
+# 3) DETAIL BY QUERY → /api/tender-detail?kode=DUMMY-001/2025
+#    (biar cocok sama URL yang tadi bro pakai)
+@app.get("/api/tender-detail")
+def get_tender_detail_query(kode: str):
+    tender = _get_tender_by_kode(kode)
+    if not tender:
+        raise HTTPException(status_code=404, detail="Tender tidak ditemukan")
+    return tender
+
+
+# 4) SEARCH KHUSUS → /api/search?q=rumah
+@app.get("/api/search")
+def search_tenders(q: str):
+    return _filter_tenders(q=q)
+
+
+# 5) STATISTIK → /api/stats
 @app.get("/api/stats")
-def tender_stats():
+def get_stats():
     total_tender = len(TENDERS)
-    total_pagu = sum(t.get("nilai_pagu", 0) for t in TENDERS)
-    instansi_set = {t.get("instansi") for t in TENDERS if t.get("instansi")}
-    status_count: Dict[str, int] = {}
+    total_nilai_pagu = sum(t["nilai_pagu"] for t in TENDERS)
+    instansi_set = {t["instansi"] for t in TENDERS}
+
+    by_status: dict[str, int] = {}
     for t in TENDERS:
-        s = t.get("status") or "Tidak Diketahui"
-        status_count[s] = status_count.get(s, 0) + 1
+        s = t["status"]
+        by_status[s] = by_status.get(s, 0) + 1
+
+    by_instansi: dict[str, int] = {}
+    for t in TENDERS:
+        i = t["instansi"]
+        by_instansi[i] = by_instansi.get(i, 0) + 1
 
     return {
         "total_tender": total_tender,
-        "total_pagu": total_pagu,
+        "total_nilai_pagu": total_nilai_pagu,
         "jumlah_instansi": len(instansi_set),
-        "by_status": status_count,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "by_status": by_status,
+        "by_instansi": by_instansi,
+        "last_update": datetime.utcnow().isoformat() + "Z",
     }
+
